@@ -784,4 +784,671 @@ function switchMapMenuPane(name){document.querySelectorAll('.map-menu-tab').forE
 function syncMapMenu(){document.querySelectorAll('.map-menu-card[data-base]').forEach(b=>b.classList.toggle('active',b.dataset.base===state.activeBase));const val=Math.round(state.overlayOpacity*100);if($('opacitySlider'))$('opacitySlider').value=val;if($('opacityValue'))$('opacityValue').textContent=val+'%';const los=$('layerOpacitySlider'),lov=$('layerOpacityValue');if(los)los.value=val;if(lov)lov.textContent=val+'%';renderLayerManager();renderGcpList()}
 function openMapMenu(pane='basemap'){switchMapMenuPane(pane);syncMapMenu();$('mapMenu').classList.toggle('calib-mode',pane==='calib');$('mapMenu').classList.add('show')}
 function closeMapMenu(){$('mapMenu').classList.remove('show');$('mapMenu').classList.remove('calib-mode')}
-function applyOverlayOpacity(v){const val=Math.max(0,Math.min(100,Number(v)||0));state.overlayOpacity=val/100;if(state.pdfOverlay)state.pdfOverlay.setOpacity(state.overlayOpacity);if($('opacitySlider'))$('opacitySlider'
+function applyOverlayOpacity(v){const val=Math.max(0,Math.min(100,Number(v)||0));state.overlayOpacity=val/100;if(state.pdfOverlay)state.pdfOverlay.setOpacity(state.overlayOpacity);if($('opacitySlider'))$('opacitySlider').value=val;if($('opacityValue'))$('opacityValue').textContent=val+'%';const los=$('layerOpacitySlider'),lov=$('layerOpacityValue');if(los)los.value=val;if(lov)lov.textContent=val+'%';save()}
+
+
+function activateTool(tool){state.activeTool=tool;document.querySelectorAll('#toolPop button').forEach(b=>b.classList.toggle('active',b.dataset.tool===tool));const _hideMsr=()=>{['msrPanel','msrHint','msrActions'].forEach(id=>{const el=$(id);if(el)el.classList.remove('show')})};const _hideTrk=()=>{['trkReadyBar','trkHud'].forEach(id=>{const el=$(id);if(el)el.classList.remove('show')})};if(tool==='plot'){closeNavigationPanelOnly();_hideMsr();_hideTrk();$('toolPop').classList.remove('show');$('plotChips').classList.add('show');$('plotHintBar').classList.add('show');$('plotActions').classList.add('show');setPlotType(state.plotType||'point');showToast('Mode Plot aktif')}else if(tool==='navigate'){hidePlotUi();_hideMsr();_hideTrk();$('toolPop').classList.remove('show');openNavigationPanel()}else if(tool==='measure'){hidePlotUi();closeNavigationPanelOnly();_hideTrk();$('toolPop').classList.remove('show');if(typeof openMeasure==='function')openMeasure();else showToast('Measure loading...')}else if(tool==='tracking'){hidePlotUi();closeNavigationPanelOnly();_hideMsr();$('toolPop').classList.remove('show');if(typeof openTrackingReady==='function')openTrackingReady();else showToast('Tracking loading...')}else{hidePlotUi();closeNavigationPanelOnly();$('toolPop').classList.remove('show');showToast('Tool '+tool+' belum tersedia')}}
+function hidePlotUi(){if($('plotChips'))$('plotChips').classList.remove('show');if($('plotHintBar'))$('plotHintBar').classList.remove('show');if($('plotActions'))$('plotActions').classList.remove('show')}
+function hideMeasureUiEarly(){['msrPanel','msrHint','msrActions'].forEach(id=>{const el=$(id);if(el)el.classList.remove('show')})}
+function hideTrkUiEarly(){['trkReadyBar','trkHud'].forEach(id=>{const el=$(id);if(el)el.classList.remove('show')})}
+function closeNavigationPanelOnly(){if($('navPanel'))$('navPanel').classList.remove('show');const nb=document.getElementById('navBtn');if(nb)nb.classList.remove('nav-active')}
+
+/* ---- Geometry helpers ---- */
+function lineDist(lls){let d=0;for(let i=0;i<lls.length-1;i++){const a={lat:lls[i].lat,lon:lls[i].lng};const b={lat:lls[i+1].lat,lon:lls[i+1].lng};d+=haversine(a,b)}return d}
+function polyPerimeter(lls){if(!lls.length)return 0;let d=0;for(let i=0;i<lls.length;i++){const a={lat:lls[i].lat,lon:lls[i].lng};const b={lat:lls[(i+1)%lls.length].lat,lon:lls[(i+1)%lls.length].lng};d+=haversine(a,b)}return d}
+function polyArea(lls){if(lls.length<3)return 0;const R=6371008.8,rad=Math.PI/180;const lat0=lls[0].lat*rad;const pts=lls.map(ll=>({x:R*Math.cos(lat0)*(ll.lng-lls[0].lng)*rad,y:R*(ll.lat-lls[0].lat)*rad}));let a=0;for(let i=0;i<pts.length;i++){const j=(i+1)%pts.length;a+=pts[i].x*pts[j].y;a-=pts[j].x*pts[i].y}return Math.abs(a)/2}
+function fmtArea(m2){if(m2>=10000)return(m2/10000).toFixed(4)+' ha';return m2.toFixed(2)+' m²'}
+function fmtPerim(m){return m>=1000?(m/1000).toFixed(3)+' km':m.toFixed(2)+' m'}
+function fmtLineD(m){return m>=1000?(m/1000).toFixed(3)+' km':m.toFixed(2)+' m'}
+function centerOf(lls){const lat=lls.reduce((s,l)=>s+l.lat,0)/lls.length;const lng=lls.reduce((s,l)=>s+l.lng,0)/lls.length;return L.latLng(lat,lng)}
+
+/* ---- Plot type & draft management ---- */
+function setPlotType(type){
+  state.plotType=type;
+  document.querySelectorAll('[data-plot-type]').forEach(b=>b.classList.toggle('active',b.dataset.plotType===type));
+  // Update hint text
+  const hints={point:'Arahkan tanda silang ke lokasi lalu tekan Ambil Koordinat',line:'Tap "Ambil Koordinat" tiap vertex garis. Min 2 titik untuk Selesai',polygon:'Tap "Ambil Koordinat" tiap sudut. Min 3 titik untuk Selesai'};
+  if($('plotHintText'))$('plotHintText').textContent=hints[type]||hints.point;
+  // Point: hide undo, line/polygon: show undo
+  const undoBtn=$('plotUndoBtn');if(undoBtn)undoBtn.style.display=(type==='point'?'none':'');
+  // Point: hide dist pill; line/poly: show after first vertex
+  $('plotDistPill').classList.remove('visible');
+  // Reset btn row columns
+  const row=$('plotBtnRow');if(row)row.className='plot-btn-row '+(type==='point'?'two':'three');
+  if(type==='point')clearPlotDraft();
+  updateDistPill();
+  showToast('Mode: '+type.toUpperCase())}
+
+function clearPlotDraft(){state.plotDraft=[];if(state.plotTempLayer){state.map.removeLayer(state.plotTempLayer);state.plotTempLayer=null}}
+function redrawPlotDraft(){
+  if(state.plotTempLayer){state.map.removeLayer(state.plotTempLayer);state.plotTempLayer=null}
+  if(!state.plotDraft.length)return;
+  const col=state.plotColor||'#ffca18';
+  if(state.plotType==='line')
+    state.plotTempLayer=L.polyline(state.plotDraft,{color:col,weight:3,dashArray:'8,8',opacity:.85}).addTo(state.map);
+  if(state.plotType==='polygon'){
+    if(state.plotDraft.length>=3)
+      state.plotTempLayer=L.polygon(state.plotDraft,{color:col,weight:2,dashArray:'8,8',fillColor:col,fillOpacity:.14}).addTo(state.map);
+    else
+      state.plotTempLayer=L.polyline(state.plotDraft,{color:col,weight:3,dashArray:'8,8',opacity:.85}).addTo(state.map)}}
+
+function updateDistPill(){
+  const lls=state.plotDraft;if(!lls.length){$('plotDistPill').classList.remove('visible');return}
+  if(state.plotType==='line'&&lls.length>=2){
+    const d=lineDist(lls);$('plotDistValue').textContent=fmtLineD(d);$('plotDistPill').classList.add('visible')}
+  else if(state.plotType==='polygon'&&lls.length>=2){
+    const p=polyPerimeter(lls); // partial perimeter while drawing
+    $('plotDistValue').textContent=fmtPerim(p);$('plotDistPill').classList.add('visible')}
+  else{$('plotDistPill').classList.remove('visible')}}
+
+function latLngToShort(ll){return ll.lat.toFixed(7)+', '+ll.lng.toFixed(7)}
+function currentMapCenter(){const c=state.map.getCenter();return L.latLng(c.lat,c.lng)}
+
+function takePlotCoordinate(){
+  if(!state.map)return;
+  const c=currentMapCenter();
+  if(state.plotType==='point'){
+    state.plotSaveMode='point';state.plotSaveLatLng=c;openPlotSaveSheet('point',c)
+  }else{
+    state.plotDraft.push(c);redrawPlotDraft();updateDistPill();
+    showToast('Vertex '+state.plotDraft.length+' ditambahkan ('+llToUtm(c.lat,c.lng)+')')}}
+
+function undoLastVertex(){
+  if(!state.plotDraft.length)return showToast('Tidak ada vertex untuk di-undo');
+  state.plotDraft.pop();redrawPlotDraft();updateDistPill();
+  showToast('Vertex terakhir dihapus. Sisa: '+state.plotDraft.length)}
+
+function finishPlot(){
+  if(state.plotType==='point')return showToast('Point langsung disimpan lewat Ambil Koordinat');
+  if(state.plotType==='line'&&state.plotDraft.length<2)return showToast('Line minimal 2 vertex');
+  if(state.plotType==='polygon'&&state.plotDraft.length<3)return showToast('Polygon minimal 3 vertex');
+  state.plotSaveMode=state.plotType;state.plotSaveLatLng=null;
+  openPlotSaveSheet(state.plotType,state.plotDraft[0])}
+
+function cancelPlot(){clearPlotDraft();hidePlotUi();$('toolPop').classList.remove('show');state.activeTool=null;showToast('Plot dibatalkan')}
+
+/* ---- Save sheet open/close ---- */
+function openPlotSaveSheet(mode,ll){
+  $('plotSaveSheet').classList.add('show');
+  $('plotSaveTitle').textContent='ADD PLOT';
+  const sub={point:'Simpan titik dari posisi kursor tengah.',line:'Simpan garis hasil '+state.plotDraft.length+' vertex.',polygon:'Simpan poligon area '+state.plotDraft.length+' vertex.'};
+  $('plotSaveSub').textContent=sub[mode]||sub.point;
+  // Default name auto-count
+  const count=mode==='point'?(state.plotPointGroup?state.plotPointGroup.getLayers().length+1:1):mode==='line'?(state.plotLineGroup.getLayers().length+1):(state.plotPolygonGroup.getLayers().length+1);
+  $('plotNameInput').value=mode==='point'?'Placemark '+count:mode==='line'?'Line '+count:'Area '+count;
+  // Coordinate from ll or centroid of draft
+  const refLl=mode==='point'?ll:(state.plotDraft.length?centerOf(state.plotDraft):ll);
+  $('plotCoordInput').value=llToUtm(refLl.lat,refLl.lng);
+  $('plotDescInput').value='';
+  // Show/hide mode-specific sections
+  $('plotPointExtras').style.display=mode==='point'?'':'none';
+  $('plotLineExtras').style.display=mode!=='point'?'':'none';
+  $('plotLineStats').style.display=mode==='line'?'':'none';
+  $('plotPolyStats').style.display=mode==='polygon'?'':'none';
+  // Populate measurements
+  if(mode==='line'&&state.plotDraft.length>=2){
+    const d=lineDist(state.plotDraft);$('plotStatJarak').textContent=fmtLineD(d)}
+  if(mode==='polygon'&&state.plotDraft.length>=3){
+    const a=polyArea(state.plotDraft),p=polyPerimeter(state.plotDraft);
+    $('plotStatLuas').textContent=fmtArea(a);$('plotStatKeliling').textContent=fmtPerim(p)}
+  // Reset line style selections to current state
+  document.querySelectorAll('#plotLineStyleRow .ls-btn').forEach(b=>b.classList.toggle('sel',b.dataset.ls===(state.plotLineStyle||'solid')));
+  document.querySelectorAll('#plotLineWidthRow .lw-btn').forEach(b=>b.classList.toggle('sel',b.dataset.lw===(String(state.plotLineWidth||3))));
+  document.body.classList.add('plot-cross-armed')}
+
+function closePlotSaveSheet(){$('plotSaveSheet').classList.remove('show');document.body.classList.remove('plot-cross-armed')}
+
+/* ---- Save plot to map ---- */
+function plotPointIcon(color,sz){const s=sz==='xlarge'?26:sz==='large'?20:sz==='small'?10:15;return L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],html:`<div style="width:${s}px;height:${s}px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 0 0 3px rgba(0,0,0,.20),0 2px 8px rgba(0,0,0,.30)"></div>`})}
+function dashArrayFor(ls){return ls==='dashed'?'10,6':ls==='dotted'?'2,7':null}
+function plotLineStyle(color,lw,ls){const da=dashArrayFor(ls);const s={color,weight:lw||3,opacity:.94};if(da)s.dashArray=da;return s}
+function plotPolyStyle(color,lw,ls){const da=dashArrayFor(ls);const s={color,weight:lw||2,fillColor:color,fillOpacity:.18,opacity:.94};if(da)s.dashArray=da;return s}
+
+function savePlotSheet(){
+  const mode=state.plotSaveMode;
+  const name=$('plotNameInput').value.trim()||'Plot';
+  const color=state.plotColor||'#45d483';
+  const sz=state.plotSize||'medium';
+  const ls=state.plotLineStyle||'solid';
+  const lw=parseInt(state.plotLineWidth)||3;
+  if(mode==='point'){
+    const ll=state.plotSaveLatLng;
+    const marker=L.marker(ll,{icon:plotPointIcon(color,sz)}).addTo(state.plotPointGroup);
+    marker.bindTooltip(name,{permanent:false,direction:'top',className:'plot-ann-lbl',offset:[0,-6]});
+    showToast('Point "'+name+'" tersimpan')}
+  else if(mode==='line'){
+    const d=lineDist(state.plotDraft);
+    const lbl=fmtLineD(d);
+    const line=L.polyline(state.plotDraft,plotLineStyle(color,lw,ls)).addTo(state.plotLineGroup);
+    // Permanent distance annotation
+    const mid=state.plotDraft[Math.floor(state.plotDraft.length/2)];
+    line.bindTooltip(lbl,{permanent:true,direction:'center',className:'plot-ann-lbl',offset:[0,0]});
+    line.bindPopup(`<b>${name}</b><br>${lbl}`);
+    clearPlotDraft();showToast('Line "'+name+'" tersimpan • '+lbl)}
+  else if(mode==='polygon'){
+    const a=polyArea(state.plotDraft),p=polyPerimeter(state.plotDraft);
+    const aLbl=fmtArea(a);const pLbl=fmtPerim(p);
+    const poly=L.polygon(state.plotDraft,plotPolyStyle(color,lw,ls)).addTo(state.plotPolygonGroup);
+    poly.bindTooltip(aLbl,{permanent:true,direction:'center',className:'plot-ann-lbl',offset:[0,0]});
+    poly.bindPopup(`<b>${name}</b><br>Luas: ${aLbl}<br>Keliling: ${pLbl}`);
+    clearPlotDraft();showToast('Polygon "'+name+'" tersimpan • '+aLbl)}
+  closePlotSaveSheet();renderLayerManager()}
+
+/* ---- Setup all plot event listeners ---- */
+function setupPlotMenus(){
+  // Tool menu
+  document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>activateTool(b.dataset.tool));
+  // Plot type chips
+  document.querySelectorAll('[data-plot-type]').forEach(b=>b.onclick=()=>setPlotType(b.dataset.plotType));
+  // Action buttons
+  $('plotTakeBtn').onclick=takePlotCoordinate;
+  $('plotUndoBtn').onclick=undoLastVertex;
+  $('plotDoneBtn').onclick=finishPlot;
+  $('plotCancelBtn').onclick=cancelPlot;
+  // Save sheet buttons
+  $('plotSaveClose').onclick=closePlotSaveSheet;
+  $('plotSheetCancel').onclick=closePlotSaveSheet;
+  $('plotSaveBtn').onclick=savePlotSheet;
+  // Footer actions
+  $('plotNavBtn').onclick=()=>{const ll=state.plotSaveLatLng||(state.plotDraft.length?centerOf(state.plotDraft):null);if(!ll)return showToast('Simpan plot dulu');closePlotSaveSheet();setNavigationTarget(ll.lat,ll.lng,$('plotNameInput').value||'Plot')};
+  $('plotExportBtn').onclick=()=>showToast('Export KML/SHP: fitur dikerjakan di tahap berikutnya');
+  $('plotDeleteBtn').onclick=()=>{if(confirm('Batalkan dan hapus draft plot ini?')){closePlotSaveSheet();cancelPlot()}};
+  // Color buttons
+  document.querySelectorAll('#plotColors .pc-btn').forEach(b=>b.onclick=()=>{state.plotColor=b.dataset.color;document.querySelectorAll('#plotColors .pc-btn').forEach(x=>x.classList.toggle('sel',x===b));redrawPlotDraft()});
+  // Point size buttons
+  document.querySelectorAll('#plotSizeRow .ps-btn').forEach(b=>b.onclick=()=>{state.plotSize=b.dataset.sz;document.querySelectorAll('#plotSizeRow .ps-btn').forEach(x=>x.classList.toggle('sel',x===b))});
+  // Line style buttons
+  document.querySelectorAll('#plotLineStyleRow .ls-btn').forEach(b=>b.onclick=()=>{state.plotLineStyle=b.dataset.ls;document.querySelectorAll('#plotLineStyleRow .ls-btn').forEach(x=>x.classList.toggle('sel',x===b))});
+  // Line width buttons
+  document.querySelectorAll('#plotLineWidthRow .lw-btn').forEach(b=>b.onclick=()=>{state.plotLineWidth=parseInt(b.dataset.lw);document.querySelectorAll('#plotLineWidthRow .lw-btn').forEach(x=>x.classList.toggle('sel',x===b))})}
+
+function layerDefinitions(){const ready=g=>!!g&&g.getLayers().length>0,vis=g=>ready(g)&&state.map.hasLayer(g);return[
+ {id:'pdf',name:state.layerNames.pdf,ready:!!state.pdfOverlay,visible:!!state.pdfVisible,sub:state.current?'Raster PDF overlay • opacity '+Math.round(state.overlayOpacity*100)+'%':'Belum ada PDF dibuka'},
+ {id:'gps',name:state.layerNames.gps,ready:!!state.gpsMarker,visible:!!state.gpsMarker&&state.map.hasLayer(state.gpsMarker),sub:state.gps?'GPS live • ±'+Math.round(state.gps.acc)+' m':'Belum ada fix GPS'},
+ {id:'gpsAcc',name:state.layerNames.gpsAcc,ready:!!state.gpsCircle,visible:!!state.gpsCircle&&state.map.hasLayer(state.gpsCircle),sub:'Lingkar akurasi GPS'},
+ {id:'tracking',name:state.layerNames.tracking,ready:false,visible:false,sub:'Belum ada data tracking'},
+ {id:'point',name:state.layerNames.point,ready:ready(state.plotPointGroup),visible:vis(state.plotPointGroup),sub:ready(state.plotPointGroup)?state.plotPointGroup.getLayers().length+' point tersimpan':'Belum ada plot point'},
+ {id:'line',name:state.layerNames.line,ready:ready(state.plotLineGroup),visible:vis(state.plotLineGroup),sub:ready(state.plotLineGroup)?state.plotLineGroup.getLayers().length+' line tersimpan':'Belum ada plot line'},
+ {id:'polygon',name:state.layerNames.polygon,ready:ready(state.plotPolygonGroup),visible:vis(state.plotPolygonGroup),sub:ready(state.plotPolygonGroup)?state.plotPolygonGroup.getLayers().length+' polygon tersimpan':'Belum ada plot polygon'},
+ {id:'overlay',name:state.layerNames.overlay,ready:false,visible:false,sub:'Belum ada KML/SHP/DXF/GeoJSON overlay'}
+]}
+function renderLayerManager(){const el=$('layerManager');if(!el)return;el.innerHTML='';layerDefinitions().forEach(l=>{const row=document.createElement('div');const isPdf=l.id==='pdf';row.className='layer-row'+(isPdf?' has-opacity':'')+(!l.ready&&!isPdf?' disabled':'');const opacityVal=Math.round(state.overlayOpacity*100);row.innerHTML=`<button class="layer-eye ${l.visible?'':'off'}" data-act="toggle" title="Show / Hide">${l.visible?'👁':'—'}</button><div><span class="layer-title">${esc(l.name)}</span><span class="layer-sub">${esc(l.sub)}</span></div><div class="layer-actions"><button class="layer-mini locked" data-act="lock" title="Layer terkunci agar tidak tergeser">🔒</button><button class="layer-mini" data-act="zoom" title="Zoom layer">⌖</button><button class="layer-mini" data-act="rename" title="Rename layer">✎</button><button class="layer-mini warn" data-act="delete" title="Hapus / sembunyikan">×</button></div>${isPdf?`<div class="layer-opacity-control"><div class="layer-opacity-head"><span>PDF OVERLAY OPACITY</span><b id="layerOpacityValue">${opacityVal}%</b></div><input id="layerOpacitySlider" type="range" min="0" max="100" value="${opacityVal}" aria-label="PDF overlay opacity"></div>`:''}`;row.querySelector('[data-act="toggle"]').onclick=()=>toggleLayer(l.id);row.querySelector('[data-act="zoom"]').onclick=()=>zoomLayer(l.id);row.querySelector('[data-act="rename"]').onclick=()=>renameLayer(l.id);row.querySelector('[data-act="delete"]').onclick=()=>deleteLayer(l.id);row.querySelector('[data-act="lock"]').onclick=()=>showToast('Layer dikunci untuk mencegah geser tidak sengaja');const slider=row.querySelector('#layerOpacitySlider');if(slider){slider.oninput=e=>{applyOverlayOpacity(e.target.value);const v=row.querySelector('#layerOpacityValue');if(v)v.textContent=Math.round(state.overlayOpacity*100)+'%'}};el.appendChild(row)})}
+function toggleLayer(id){if(id==='pdf')return togglePdf();if(id==='gps'&&state.gpsMarker){state.map.hasLayer(state.gpsMarker)?state.map.removeLayer(state.gpsMarker):state.gpsMarker.addTo(state.map);return renderLayerManager()}if(id==='gpsAcc'&&state.gpsCircle){state.map.hasLayer(state.gpsCircle)?state.map.removeLayer(state.gpsCircle):state.gpsCircle.addTo(state.map);return renderLayerManager()}const g={point:state.plotPointGroup,line:state.plotLineGroup,polygon:state.plotPolygonGroup}[id];if(g&&g.getLayers().length){state.map.hasLayer(g)?state.map.removeLayer(g):g.addTo(state.map);return renderLayerManager()}showToast('Layer belum memiliki data')}
+function zoomLayer(id){if(id==='pdf')return fitPdf();if((id==='gps'||id==='gpsAcc')&&state.gps){state.map.setView([state.gps.lat,state.gps.lon],18);return}const g={point:state.plotPointGroup,line:state.plotLineGroup,polygon:state.plotPolygonGroup}[id];if(g&&g.getLayers().length){state.map.fitBounds(g.getBounds(),{padding:[24,24]});return}showToast('Belum ada data untuk zoom layer')}
+function renameLayer(id){const next=prompt('Rename layer',state.layerNames[id]||id);if(next===null)return;const clean=next.trim();if(!clean)return showToast('Nama layer tidak boleh kosong');state.layerNames[id]=clean;renderLayerManager();showToast('Nama layer diubah')}
+function deleteLayer(id){if(id==='pdf'){if(!confirm('Hapus/sembunyikan PDF overlay dari viewer?'))return;if(state.pdfOverlay){state.map.removeLayer(state.pdfOverlay);state.pdfOverlay=null;state.pdfVisible=false}renderLayerManager();return showToast('PDF overlay disembunyikan')}if(id==='gps'||id==='gpsAcc'){showToast('Layer GPS tidak dihapus, hanya bisa show/hide');return}const g={point:state.plotPointGroup,line:state.plotLineGroup,polygon:state.plotPolygonGroup}[id];if(g&&g.getLayers().length){if(!confirm('Hapus semua objek layer ini?'))return;g.clearLayers();renderLayerManager();return showToast('Layer dibersihkan')}showToast('Layer belum memiliki data')}
+function makeGcpIcon(type){return L.divIcon({className:'',html:`<div class="gcp-marker ${type}" style="width:18px;height:18px"></div>`,iconSize:[18,18],iconAnchor:[9,9]})}
+function startGcpPair(){if(!state.current)return showToast('Buka PDF overlay dulu');if(state.gcpPairs.length>=4)return showToast('Maksimal 4 titik kontrol');state.pendingGcp={};state.calibPick='pdf';$('calibStage').innerHTML='Tap <b>titik pada PDF overlay</b> terlebih dahulu, misalnya perpotongan jalan/sungai.';showToast('Tap titik PDF overlay')}
+function onMapCalibrationClick(e){if(!state.calibPick)return;if(state.calibPick==='pdf'){state.pendingGcp={pdf:e.latlng};const m=L.marker(e.latlng,{icon:makeGcpIcon('pdf'),zIndexOffset:1500}).addTo(state.map);state.gcpGraphics.push(m);state.pendingGcp.pdfMarker=m;state.calibPick='sat';$('calibStage').innerHTML='Sekarang tap <b>posisi yang benar pada citra satelit</b> untuk titik yang sama.';showToast('Tap lokasi satelit yang benar');return}if(state.calibPick==='sat'){state.pendingGcp.sat=e.latlng;const m=L.marker(e.latlng,{icon:makeGcpIcon('sat'),zIndexOffset:1500}).addTo(state.map);const line=L.polyline([state.pendingGcp.pdf,state.pendingGcp.sat],{color:'#ffca18',weight:2,dashArray:'5,5'}).addTo(state.map);state.gcpGraphics.push(m,line);state.gcpPairs.push({pdf:{lat:state.pendingGcp.pdf.lat,lng:state.pendingGcp.pdf.lng},sat:{lat:e.latlng.lat,lng:e.latlng.lng}});state.pendingGcp=null;state.calibPick=null;$('calibStage').innerHTML='Titik kontrol tersimpan. Tambahkan sampai 2–4 titik, lalu tekan <b>Terapkan Kalibrasi</b>.';renderGcpList();showToast('GCP tersimpan')}} 
+function renderGcpList(){const el=$('gcpList');if(!el)return;el.innerHTML='';if(!state.gcpPairs.length){el.innerHTML='<div class="gcp-item">Belum ada titik kontrol. Tambahkan 2–4 titik untuk hasil lebih stabil.</div>';return}state.gcpPairs.forEach((p,i)=>{const dLat=p.sat.lat-p.pdf.lat,dLng=p.sat.lng-p.pdf.lng;const item=document.createElement('div');item.className='gcp-item';item.innerHTML=`<b>GCP ${i+1}</b> • ΔLat ${dLat.toFixed(7)} • ΔLon ${dLng.toFixed(7)}`;el.appendChild(item)})}
+function clearGcp(){state.gcpPairs=[];state.pendingGcp=null;state.calibPick=null;state.gcpGraphics.forEach(g=>{try{state.map.removeLayer(g)}catch(e){}});state.gcpGraphics=[];$('calibStage').innerHTML='Kalibrasi langsung 2–4 titik kontrol: tekan <b>Tambah Titik Kontrol</b>, tap titik pada PDF overlay, lalu tap posisi yang benar pada citra satelit.';renderGcpList();showToast('GCP direset')}
+function transformBoundsByGcp(b){const pts=state.gcpPairs;if(!pts.length)return null;if(pts.length===1){const dLat=pts[0].sat.lat-pts[0].pdf.lat,dLng=pts[0].sat.lng-pts[0].pdf.lng;return {latMin:b.latMin+dLat,latMax:b.latMax+dLat,lonMin:b.lonMin+dLng,lonMax:b.lonMax+dLng,preset:false}}const avg=a=>a.reduce((x,y)=>x+y,0)/a.length;const cPdf={lat:avg(pts.map(p=>p.pdf.lat)),lng:avg(pts.map(p=>p.pdf.lng))};const cSat={lat:avg(pts.map(p=>p.sat.lat)),lng:avg(pts.map(p=>p.sat.lng))};const denomLat=pts.reduce((s,p)=>s+Math.abs(p.pdf.lat-cPdf.lat),0)||1;const denomLng=pts.reduce((s,p)=>s+Math.abs(p.pdf.lng-cPdf.lng),0)||1;let sLat=(pts.reduce((s,p)=>s+Math.abs(p.sat.lat-cSat.lat),0)||denomLat)/denomLat;let sLng=(pts.reduce((s,p)=>s+Math.abs(p.sat.lng-cSat.lng),0)||denomLng)/denomLng;sLat=Math.min(2,Math.max(.5,sLat));sLng=Math.min(2,Math.max(.5,sLng));const corners=[[b.latMin,b.lonMin],[b.latMin,b.lonMax],[b.latMax,b.lonMin],[b.latMax,b.lonMax]].map(([lat,lng])=>({lat:cSat.lat+(lat-cPdf.lat)*sLat,lng:cSat.lng+(lng-cPdf.lng)*sLng}));return {latMin:Math.min(...corners.map(c=>c.lat)),latMax:Math.max(...corners.map(c=>c.lat)),lonMin:Math.min(...corners.map(c=>c.lng)),lonMax:Math.max(...corners.map(c=>c.lng)),preset:false}}
+async function applyGcpCalibration(){if(!state.current)return showToast('Buka PDF dulu');if(!state.gcpPairs.length)return showToast('Tambahkan minimal 1 titik kontrol');const old=getBoundsForItem(state.current);const next=transformBoundsByGcp(old);if(!next)return;state.manualBounds[state.current.id]=next;save();if(state.pdfOverlay)clearPdfOverlay();await renderPdfOverlay(state.current,next);fitPdf();clearGcp();showToast('Kalibrasi GCP diterapkan ke PDF overlay')}
+
+function getBoundsForItem(item){const key=item.id;if(state.manualBounds[key])return state.manualBounds[key];const n=(item.name||'').toLowerCase();if(n.includes('pontang'))return {latMin:-6.1050,latMax:-5.9550,lonMin:106.2070,lonMax:106.3270,preset:true};return {latMin:-6.1050,latMax:-5.9550,lonMin:106.2070,lonMax:106.3270,preset:true}}
+function boundsToLeaflet(b){return [[b.latMin,b.lonMin],[b.latMax,b.lonMax]]}
+function selectItem(item){state.current=item;state.selected[item.tab]=item.id;render();openViewer(item)}
+async function openViewer(item){$('mapViewer').classList.add('show');$('viewerTitle').textContent=item.name;$('viewerBadge').textContent=item.typeLabel==='PDF'?'PDF + SATELLITE':item.typeLabel+' + SATELLITE';initMap();setBase('sat');clearPdfOverlay();$('opacityCard')&&$('opacityCard').classList.remove('show');applyOverlayOpacity(Math.round(state.overlayOpacity*100));const b=getBoundsForItem(item);state.map.fitBounds(boundsToLeaflet(b),{padding:[20,20]});if(item.typeLabel==='PDF'&&item.url){await renderPdfOverlay(item,b)}else{showToast(item.typeLabel+' dibuka di atas basemap. Preview raster penuh butuh parser khusus.')}if(state.gps)updateGpsDisplay(state.gps);syncMapMenu();closeMapMenu();setTimeout(()=>state.map.invalidateSize(),250)}
+function clearPdfOverlay(){if(state.pdfOverlay){state.map.removeLayer(state.pdfOverlay);state.pdfOverlay=null}}
+async function renderPdfOverlay(item,bounds){$('pdfLoading').classList.add('show');try{if(!window.pdfjsLib)throw new Error('PDF.js belum termuat');pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';const pdf=await pdfjsLib.getDocument(item.url).promise;const page=await pdf.getPage(1);const base=page.getViewport({scale:1});const target=Math.min(1800,Math.max(1000,Math.round(base.height*1.35)));const scale=target/base.height;const vp=page.getViewport({scale});const canvas=document.createElement('canvas');canvas.width=Math.round(vp.width);canvas.height=Math.round(vp.height);const ctx=canvas.getContext('2d',{alpha:false});ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);await page.render({canvasContext:ctx,viewport:vp}).promise;const url=canvas.toDataURL('image/png');clearPdfOverlay();state.pdfOverlay=L.imageOverlay(url,boundsToLeaflet(bounds),{opacity:state.overlayOpacity,interactive:true,zIndex:410}).addTo(state.map);state.pdfVisible=true;state.map.fitBounds(boundsToLeaflet(bounds),{padding:[12,12]});showToast(bounds.preset?'PDF overlay aktif dengan preset Pontang. Cek terhadap ESRI Satellite.':'PDF overlay aktif. Cek terhadap satelit.')}catch(err){console.error(err);showToast('PDF overlay gagal dibaca. Coba refresh / import ulang.')}finally{$('pdfLoading').classList.remove('show')}}
+function closeViewer(){closeMapMenu();if($('navPanel'))$('navPanel').classList.remove('show');$('mapViewer').classList.remove('show')}
+function fitPdf(){if(!state.current)return;if(state.pdfOverlay)state.map.fitBounds(state.pdfOverlay.getBounds(),{padding:[12,12]});else state.map.fitBounds(boundsToLeaflet(getBoundsForItem(state.current)),{padding:[12,12]})}
+function togglePdf(){if(!state.pdfOverlay)return showToast('Belum ada PDF overlay');state.pdfVisible=!state.pdfVisible;if(state.pdfVisible)state.pdfOverlay.addTo(state.map);else state.map.removeLayer(state.pdfOverlay);syncMapMenu();showToast(state.pdfVisible?'PDF overlay tampil':'PDF overlay disembunyikan')}
+function setGpsStatus(cls,text){$('gpsQuality').className='gps-quality '+cls;$('gpsQuality').textContent=text}
+
+function navTargetIcon(){return L.divIcon({className:'nav-target-icon',iconSize:[20,20],iconAnchor:[10,10],html:'<div class="nav-target-dot"></div>'})}
+function haversine(a,b){const R=6371008.8,rad=Math.PI/180,dLat=(b.lat-a.lat)*rad,dLon=(b.lon-a.lon)*rad,lat1=a.lat*rad,lat2=b.lat*rad;const h=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
+function bearingTo(a,b){const rad=Math.PI/180,lat1=a.lat*rad,lat2=b.lat*rad,dLon=(b.lon-a.lon)*rad;const y=Math.sin(dLon)*Math.cos(lat2);const x=Math.cos(lat1)*Math.sin(lat2)-Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLon);return (Math.atan2(y,x)*180/Math.PI+360)%360}
+function angleDelta(target,head){return ((target-head+540)%360)-180}
+function compassName(deg){const dirs=['N','NE','E','SE','S','SW','W','NW'];return dirs[Math.round(((deg%360)+360)%360/45)%8]}
+function fmtDist(m){return m<1000?Math.round(m)+' m':(m/1000).toFixed(2)+' km'}
+function fmtEta(sec){if(!isFinite(sec)||sec<=0)return '--';if(sec<60)return Math.round(sec)+' dtk';const m=Math.floor(sec/60),s=Math.round(sec%60);if(m<60)return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');const h=Math.floor(m/60),mm=m%60;return h+'j '+mm+'m'}
+function relativeDirection(delta){const a=Math.abs(delta);if(a<=10)return 'Lurus';if(a<=35)return delta>0?'Kanan sedikit':'Kiri sedikit';if(a<=135)return delta>0?'Belok kanan':'Belok kiri';return 'Putar balik'}
+function headingFromMovement(prev,cur){if(!prev)return state.gpsHeading||0;const d=haversine({lat:prev.lat,lon:prev.lon},{lat:cur.lat,lon:cur.lon});return d>1.5?bearingTo({lat:prev.lat,lon:prev.lon},{lat:cur.lat,lon:cur.lon}):(state.gpsHeading||0)}
+function setNavigationTarget(lat,lon,name='Target'){if(!state.map)return;state.navTarget={lat,lon,name};if(state.navMarker)state.map.removeLayer(state.navMarker);state.navMarker=L.marker([lat,lon],{icon:navTargetIcon(),zIndexOffset:900}).addTo(state.map);if(!state.navLine)state.navLine=L.polyline([],{color:'#ffca18',weight:3,dashArray:'8,8'}).addTo(state.map);state.navigating=true;$('navPanel').classList.add('show');(()=>{const nb=document.getElementById('navBtn');if(nb)nb.classList.add('nav-active')})();$('navTargetName').textContent=name;updateNavigation();showToast('Navigasi target aktif')}
+function setTargetFromCenter(){if(!state.map)return showToast('Buka peta dulu');const c=state.map.getCenter();setNavigationTarget(c.lat,c.lng,'Target kursor tengah')}
+function setTargetManual(){const val=prompt('Input koordinat target: lat, lon','-6.035000, 106.270000');if(!val)return;const parts=val.split(/[,\\s]+/).map(Number).filter(v=>Number.isFinite(v));if(parts.length<2)return showToast('Format koordinat tidak valid');setNavigationTarget(parts[0],parts[1],'Target manual')}
+function stopNavigation(){state.navigating=false;$('navPanel').classList.remove('show');(()=>{const nb=document.getElementById('navBtn');if(nb)nb.classList.remove('nav-active')})();if(state.navLine){state.map.removeLayer(state.navLine);state.navLine=null}if(state.navMarker){state.map.removeLayer(state.navMarker);state.navMarker=null}state.navTarget=null;showToast('Navigasi dihentikan')}
+function openNavigationPanel(){if(!state.map)return showToast('Buka peta dulu');$('navPanel').classList.add('show');if(state.navTarget){state.navigating=true;(()=>{const nb=document.getElementById('navBtn');if(nb)nb.classList.add('nav-active')})();updateNavigation()}else showToast('Pilih target dari kursor tengah atau input koordinat')}
+function updateNavigation(){if(!state.map||!state.navTarget)return;const t=state.navTarget;if(state.gps){const g={lat:state.gps.lat,lon:state.gps.lon};const dist=haversine(g,t);const brg=bearingTo(g,t);const head=state.gps.heading||state.gpsHeading||0;const delta=angleDelta(brg,head);const sp=state.gps.speed&&state.gps.speed>.4?state.gps.speed:1.35;const eta=dist/sp;$('navDistance').textContent=fmtDist(dist);$('navBearing').textContent=Math.round(brg)+'° '+compassName(brg);$('navDirection').textContent=relativeDirection(delta);$('navEta').textContent=fmtEta(eta);if(state.navLine)state.navLine.setLatLngs([[g.lat,g.lon],[t.lat,t.lon]]);if(dist<3)showToast('Tiba di target');else if(dist<10)showToast('Mendekati target')}else{$('navDistance').textContent='GPS --';$('navBearing').textContent='--';$('navDirection').textContent='Menunggu GPS';$('navEta').textContent='--'}}
+
+function setGpsFollow(active){state.gpsFollow=!!active;const btn=$('gpsBtn');if(btn)btn.classList.toggle('is-following',state.gpsFollow)}
+function gpsArrowIcon(heading=0){const deg=Number.isFinite(heading)?heading:0;return L.divIcon({className:'gps-arrow-icon',iconSize:[24,24],iconAnchor:[12,12],html:`<div class="gps-arrow-wrap" style="transform:rotate(${deg}deg)"><svg viewBox="0 0 64 64" width="24" height="24" aria-hidden="true"><path d="M32 7 L52 54 L32 43 L12 54 Z" fill="#56c9f2" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/></svg></div>`})}
+function startGps(){setGpsFollow(true);if(!navigator.geolocation){setGpsStatus('poor','GPS: TIDAK DIDUKUNG');return showToast('GPS tidak didukung browser')};setGpsStatus('avg','GPS: MENCARI FIX...');showToast('Meminta lokasi GPS...');if(state.gps&&state.map){state.map.setView([state.gps.lat,state.gps.lon],Math.max(state.map.getZoom()||17,17),{animate:true})}navigator.geolocation.getCurrentPosition(updateGps,e=>gpsError(e),{enableHighAccuracy:false,timeout:8000,maximumAge:60000});if(state.watchId!==null)navigator.geolocation.clearWatch(state.watchId);state.watchId=navigator.geolocation.watchPosition(updateGps,e=>gpsError(e),{enableHighAccuracy:true,timeout:25000,maximumAge:0})}
+function updateGps(pos){const c=pos.coords;let heading=Number.isFinite(c.heading)?c.heading:headingFromMovement(state.lastGps,{lat:c.latitude,lon:c.longitude});if(Number.isFinite(heading))state.gpsHeading=heading;const gps={lat:c.latitude,lon:c.longitude,alt:c.altitude,acc:c.accuracy,speed:c.speed||0,heading,time:Date.now()};state.lastGps=gps;state.gps=gps;updateGpsDisplay(gps);if(!state.map)return;const ll=[gps.lat,gps.lon];if(!state.gpsMarker){state.gpsMarker=L.marker(ll,{icon:gpsArrowIcon(heading),zIndexOffset:1000,interactive:false}).addTo(state.map);state.gpsCircle=L.circle(ll,{radius:gps.acc||10,color:'#56c9f2',weight:2,fillColor:'#56c9f2',fillOpacity:.14}).addTo(state.map)}else{state.gpsMarker.setLatLng(ll);state.gpsMarker.setIcon(gpsArrowIcon(heading));state.gpsCircle.setLatLng(ll).setRadius(gps.acc||10)};if(state.gpsFollow||!state._firstFix){const targetZoom=state._firstFix?(state.map.getZoom()||17):17;state.map.setView(ll,targetZoom,{animate:true});state._firstFix=true}updateNavigation()}
+function updateGpsDisplay(gps){const q=gps.acc<=5?'fix':gps.acc<=15?'avg':'poor';setGpsStatus(q,'GPS: '+(q==='fix'?'FIX':q==='avg'?'AVERAGE':'POOR')+' • ±'+Math.round(gps.acc)+' m');$('coordInfo').textContent=llToUtm(gps.lat,gps.lon);$('elevInfo').textContent=(gps.alt==null?'23.7 m MDPL':gps.alt.toFixed(1)+' m MDPL')+' • Akurasi '+Math.round(gps.acc)+' m'}
+function gpsError(e){const msg=e.code===1?'GPS: IZIN DITOLAK':e.code===2?'GPS: NO FIX':'GPS: MENCARI...';if(e.code===1)setGpsFollow(false);setGpsStatus(e.code===3?'avg':'poor',msg);showToast(e.code===1?'Izin lokasi situs ditolak. Buka dari HTTPS dan izinkan lokasi situs.':'GPS belum fix, coba tunggu di area terbuka.')}
+function llToUtm(lat,lon){const zone=Math.floor((lon+180)/6)+1;const a=6378137,f=1/298.257223563,k0=.9996,e=Math.sqrt(f*(2-f));const φ=lat*Math.PI/180,λ=lon*Math.PI/180,λ0=((zone-1)*6-180+3)*Math.PI/180;const ep2=e*e/(1-e*e),N=a/Math.sqrt(1-e*e*Math.sin(φ)**2),T=Math.tan(φ)**2,C=ep2*Math.cos(φ)**2,A=Math.cos(φ)*(λ-λ0);const M=a*((1-e*e/4-3*e**4/64-5*e**6/256)*φ-(3*e*e/8+3*e**4/32+45*e**6/1024)*Math.sin(2*φ)+(15*e**4/256+45*e**6/1024)*Math.sin(4*φ)-(35*e**6/3072)*Math.sin(6*φ));let E=k0*N*(A+(1-T+C)*A**3/6+(5-18*T+T*T+72*C-58*ep2)*A**5/120)+500000;let North=k0*(M+N*Math.tan(φ)*(A*A/2+(5-T+9*C+4*C*C)*A**4/24+(61-58*T+T*T+600*C-330*ep2)*A**6/720));if(lat<0)North+=10000000;return `${zone}${lat<0?'S':'N'} E ${Math.round(E)} N ${Math.round(North)}`}
+function openCalib(){openMapMenu('calib')}
+function saveBounds(){if(!state.current)return;const b={latMax:parseFloat($('latMaxInput').value),latMin:parseFloat($('latMinInput').value),lonMin:parseFloat($('lonMinInput').value),lonMax:parseFloat($('lonMaxInput').value)};if(Object.values(b).some(v=>!isFinite(v))||b.latMin>=b.latMax||b.lonMin>=b.lonMax)return showToast('Bounds tidak valid');state.manualBounds[state.current.id]=b;save();$('calibBackdrop').classList.remove('show');openViewer(state.current);showToast('Bounds PDF disimpan')}
+function resetBounds(){if(!state.current)return;delete state.manualBounds[state.current.id];save();$('calibBackdrop').classList.remove('show');openViewer(state.current);showToast('Bounds kembali ke preset')}
+function addFiles(files){[...files].forEach(file=>{const t=typeFromName(file.name);if(state.chosenKind==='dxf'&&t.tab!=='dxf')return showToast(file.name+' bukan DXF');if(state.chosenKind==='pdf'&&t.tab!=='pdf')return showToast(file.name+' bukan PDF/GeoTIFF');const item={id:uid(),name:file.name,tab:t.tab,typeLabel:t.label,size:file.size,createdAt:Date.now(),url:URL.createObjectURL(file),file};state.files[t.tab].unshift(item);state.activeTab=t.tab});save();render();showToast('Peta berhasil diimpor')}
+$('importBtn').onclick=()=>$('sheetBackdrop').classList.add('show');$('sheetClose').onclick=()=>$('sheetBackdrop').classList.remove('show');$('choosePdf').onclick=()=>{state.chosenKind='pdf';$('fileInput').accept='.pdf,.tif,.tiff,.geotiff';$('fileInput').click();$('sheetBackdrop').classList.remove('show')};$('chooseDxf').onclick=()=>{state.chosenKind='dxf';$('fileInput').accept='.dxf';$('fileInput').click();$('sheetBackdrop').classList.remove('show')};$('fileInput').onchange=e=>{addFiles(e.target.files);e.target.value=''};
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{state.activeTab=b.dataset.tab;$('searchInput').value='';render()});$('searchInput').oninput=render;$('viewerBack').onclick=closeViewer;$('viewerFit').onclick=fitPdf;$('gpsBtn').onclick=startGps;$('navSetCenterBtn').onclick=setTargetFromCenter;$('navManualBtn').onclick=setTargetManual;$('navStopBtn').onclick=stopNavigation;$('navCenterBtn').onclick=()=>{if(state.gps&&state.map)state.map.setView([state.gps.lat,state.gps.lon],Math.max(state.map.getZoom()||17,17),{animate:true})};$('layerBtn').onclick=()=>openMapMenu('layers');$('mapMenuClose').onclick=closeMapMenu;$('mapMenuScrim').onclick=closeMapMenu;document.querySelectorAll('.map-menu-tab').forEach(b=>b.onclick=()=>switchMapMenuPane(b.dataset.pane));document.querySelectorAll('.map-menu-card[data-base]').forEach(b=>b.onclick=()=>setBase(b.dataset.base));$('addGcpBtn').onclick=startGcpPair;$('applyGcpBtn').onclick=applyGcpCalibration;$('clearGcpBtn').onclick=clearGcp;$('fitPdfFromMenuBtn').onclick=fitPdf;$('manualBoundsBtn').onclick=()=>showToast('Manual bounds lama disembunyikan. Gunakan GCP langsung di layar.');$('layerClose').onclick=()=>$('layerBackdrop').classList.remove('show');$('togglePdfBtn').onclick=togglePdf;$('fitPdfBtn').onclick=fitPdf;$('satBtn').onclick=()=>setBase('sat');$('osmBtn').onclick=()=>setBase('osm');$('topoBtn').onclick=()=>setBase('topo');$('worldviewBtn').onclick=()=>setBase('worldview');$('calibBtn').onclick=()=>openMapMenu('calib');$('calibClose').onclick=()=>$('calibBackdrop').classList.remove('show');$('saveBoundsBtn').onclick=saveBounds;$('resetBoundsBtn').onclick=resetBounds;$('zoomInBtn').onclick=()=>state.map&&state.map.zoomIn(.5);$('zoomOutBtn').onclick=()=>state.map&&state.map.zoomOut(.5);$('toolsBtn').onclick=()=>{$('toolPop').classList.toggle('show')};$('baseMapBtn').onclick=()=>showToast('Viewer memakai ESRI Satellite default untuk cek overlay.');if($('opacitySlider'))$('opacitySlider').oninput=e=>applyOverlayOpacity(e.target.value);document.querySelectorAll('.base-chip').forEach(b=>b.onclick=()=>setBase(b.dataset.base));setupPlotMenus();
+render();
+
+/* ============================================================
+   MEASURE ENGINE  –  Jarak & Luas
+   ============================================================ */
+const msr={
+  mode:'jarak',     // 'jarak' | 'luas'
+  pts:[],           // L.LatLng[]
+  tempLayer:null,   // L.FeatureGroup for preview lines/polygon
+  segLabels:[],     // Leaflet tooltips per segment
+  resultLayer:null, // saved result FeatureGroup
+  color:'#56c9f2',
+  lineStyle:'solid',
+  lineWidth:3,
+  active:false
+};
+
+function hideMeasureUi(){
+  ['msrPanel','msrHint','msrActions','msrSaveSheet'].forEach(id=>{
+    const el=$(id);if(el)el.classList.remove('show');
+  });
+  clearMsrTemp();
+  msr.active=false;
+}
+
+function openMeasure(){
+  if(!state.map)return showToast('Buka peta dulu');
+  msr.active=true;msr.pts=[];
+  clearMsrTemp();
+  setMsrMode(msr.mode);
+  $('msrPanel').classList.add('show');
+  $('msrHint').classList.add('show');
+  $('msrActions').classList.add('show');
+  updateMsrStats();
+}
+
+function setMsrMode(mode){
+  msr.mode=mode;msr.pts=[];
+  clearMsrTemp();
+  document.querySelectorAll('[data-msr]').forEach(b=>b.classList.toggle('active',b.dataset.msr===mode));
+  // toggle stat cells
+  $('msrStatA').style.display='';          // jarak always show
+  $('msrStatB').style.display=mode==='luas'?'':'none';
+  $('msrStatC').style.display=mode==='luas'?'':'none';
+  const hint=mode==='jarak'
+    ?'Tap AMBIL UKURAN untuk setiap titik. Min 2 titik → SELESAI.'
+    :'Tap AMBIL UKURAN untuk setiap sudut. Min 3 titik → poligon otomatis tertutup.';
+  $('msrHintText').textContent=hint;
+  updateMsrStats();
+}
+
+function msrAmbil(){
+  if(!state.map)return;
+  const c=state.map.getCenter();
+  msr.pts.push(L.latLng(c.lat,c.lng));
+  rebuildMsrTemp();
+  updateMsrStats();
+  showToast('Titik '+(msr.pts.length)+' ditambahkan');
+}
+
+function rebuildMsrTemp(){
+  clearMsrTemp();
+  if(!state.map||msr.pts.length<1)return;
+  msr.tempLayer=L.featureGroup().addTo(state.map);
+
+  const dashArr=msr.lineStyle==='dashed'?'10,8':msr.lineStyle==='dotted'?'2,8':null;
+
+  if(msr.mode==='jarak'){
+    if(msr.pts.length>=2){
+      const poly=L.polyline(msr.pts,{color:msr.color,weight:msr.lineWidth,dashArray:dashArr,opacity:.9}).addTo(msr.tempLayer);
+      // segment distance labels
+      for(let i=0;i<msr.pts.length-1;i++){
+        const a=msr.pts[i],b=msr.pts[i+1];
+        const d=haversine({lat:a.lat,lon:a.lng},{lat:b.lat,lon:b.lng});
+        const mid=L.latLng((a.lat+b.lat)/2,(a.lng+b.lng)/2);
+        L.tooltip({permanent:true,className:'msr-seg-lbl',direction:'center',offset:[0,0]})
+         .setContent(fmtLineD(d)).setLatLng(mid).addTo(msr.tempLayer);
+      }
+    }
+    // vertex markers
+    msr.pts.forEach((p,i)=>{
+      L.circleMarker(p,{radius:5,color:'#fff',weight:2,fillColor:msr.color,fillOpacity:1}).addTo(msr.tempLayer);
+    });
+  } else {
+    // LUAS mode
+    const pts2=msr.pts;
+    if(pts2.length>=2){
+      // open line preview while adding
+      L.polyline(pts2,{color:msr.color,weight:msr.lineWidth,dashArray:dashArr,opacity:.85}).addTo(msr.tempLayer);
+      // show closing preview dashed
+      if(pts2.length>=3){
+        L.polyline([pts2[pts2.length-1],pts2[0]],{color:msr.color,weight:1.5,dashArray:'6,6',opacity:.5}).addTo(msr.tempLayer);
+        // filled polygon
+        L.polygon(pts2,{color:msr.color,weight:msr.lineWidth,dashArray:dashArr,fillColor:msr.color,fillOpacity:.12}).addTo(msr.tempLayer);
+      }
+      // segment labels for luas
+      for(let i=0;i<pts2.length-1;i++){
+        const a=pts2[i],b=pts2[i+1];
+        const d=haversine({lat:a.lat,lon:a.lng},{lat:b.lat,lon:b.lng});
+        const mid=L.latLng((a.lat+b.lat)/2,(a.lng+b.lng)/2);
+        L.tooltip({permanent:true,className:'msr-seg-lbl',direction:'center',offset:[0,0]})
+         .setContent(fmtLineD(d)).setLatLng(mid).addTo(msr.tempLayer);
+      }
+    }
+    // area + perimeter label in center
+    if(pts2.length>=3){
+      const area=polyArea(pts2);
+      const perim=polyPerimeter(pts2);
+      const c=centerOf(pts2);
+      L.tooltip({permanent:true,className:'msr-result-badge',direction:'center',offset:[0,0]})
+       .setContent(fmtArea(area)+' | P: '+fmtPerim(perim)).setLatLng(c).addTo(msr.tempLayer);
+    }
+    pts2.forEach(p=>{
+      L.circleMarker(p,{radius:5,color:'#fff',weight:2,fillColor:msr.color,fillOpacity:1}).addTo(msr.tempLayer);
+    });
+  }
+}
+
+function clearMsrTemp(){
+  if(msr.tempLayer&&state.map){try{state.map.removeLayer(msr.tempLayer)}catch(e){}}
+  msr.tempLayer=null;
+}
+
+function updateMsrStats(){
+  const pts=msr.pts;
+  if(msr.mode==='jarak'){
+    const d=pts.length>=2?lineDist(pts):0;
+    $('msrValJarak').textContent=fmtLineD(d);
+    $('msrValPts').textContent=pts.length;
+  } else {
+    const area=pts.length>=3?polyArea(pts):0;
+    const perim=pts.length>=3?polyPerimeter(pts):0;
+    const d=pts.length>=2?lineDist(pts):0;
+    $('msrValJarak').textContent=fmtLineD(d);
+    $('msrValLuas').textContent=fmtArea(area);
+    $('msrValKeliling').textContent=fmtPerim(perim);
+    $('msrValPts').textContent=pts.length;
+  }
+}
+
+function msrUndo(){
+  if(!msr.pts.length)return showToast('Tidak ada titik untuk dihapus');
+  msr.pts.pop();
+  rebuildMsrTemp();
+  updateMsrStats();
+  showToast('Titik terakhir dihapus');
+}
+
+function msrDone(){
+  const min=msr.mode==='jarak'?2:3;
+  if(msr.pts.length<min)return showToast('Minimal '+min+' titik untuk mode '+msr.mode);
+  openMsrSaveSheet();
+}
+
+function openMsrSaveSheet(){
+  const pts=msr.pts;
+  const isLuas=msr.mode==='luas';
+  // populate
+  $('msrSaveTitle').textContent=isLuas?'ADD PLOT — AREA':'ADD PLOT — DISTANCE';
+  $('msrSaveSub').textContent=isLuas?'Simpan hasil pengukuran luasan ke layer peta.':'Simpan hasil pengukuran jarak ke layer peta.';
+  $('msrNameInput').value=isLuas?('Area '+(Date.now()%1000)):('Distance '+(Date.now()%1000));
+  // coordinate: center of pts
+  const c=centerOf(pts);
+  $('msrCoordDisp').textContent=llToUtm(c.lat,c.lng);
+  // description
+  if(isLuas){
+    const area=polyArea(pts);const perim=polyPerimeter(pts);
+    $('msrDescInput').value=fmtArea(area)+' | P: '+fmtPerim(perim);
+    $('msrHlLuas').textContent=fmtArea(area);
+    $('msrHlKeliling').textContent=fmtPerim(perim);
+    $('msrJarakHl').style.display='none';
+    $('msrLuasHl').style.display='';
+  } else {
+    const d=lineDist(pts);
+    $('msrDescInput').value=fmtLineD(d);
+    $('msrHlJarak').textContent=fmtLineD(d);
+    $('msrJarakHl').style.display='';
+    $('msrLuasHl').style.display='none';
+  }
+  $('msrSaveSheet').classList.add('show');
+}
+
+function msrSave(){
+  if(!state.map)return;
+  const name=$('msrNameInput').value.trim()||'Plot';
+  const desc=$('msrDescInput').value.trim();
+  const pts=msr.pts;
+  const isLuas=msr.mode==='luas';
+  const dashArr=msr.lineStyle==='dashed'?'10,8':msr.lineStyle==='dotted'?'2,8':null;
+
+  const group=isLuas?state.plotPolygonGroup:state.plotLineGroup;
+  const savedLayer=L.featureGroup().addTo(state.map);
+
+  if(isLuas){
+    const area=polyArea(pts);
+    const perim=polyPerimeter(pts);
+    const poly=L.polygon(pts,{color:msr.color,weight:msr.lineWidth,dashArray:dashArr,fillColor:msr.color,fillOpacity:.15}).addTo(savedLayer);
+    // ha annotation
+    const areaLabel=area>=10000?(area/10000).toFixed(2)+' ha':area.toFixed(0)+' m²';
+    const c=centerOf(pts);
+    L.tooltip({permanent:true,className:'msr-ha-lbl',direction:'center',offset:[0,0]})
+     .setContent(areaLabel).setLatLng(c).addTo(savedLayer);
+    state.plotPolygonGroup&&state.plotPolygonGroup.addLayer(savedLayer);
+  } else {
+    L.polyline(pts,{color:msr.color,weight:msr.lineWidth,dashArray:dashArr}).addTo(savedLayer);
+    const d=lineDist(pts);
+    const mid=centerOf(pts);
+    L.tooltip({permanent:true,className:'msr-ha-lbl',direction:'center',offset:[0,0]})
+     .setContent(fmtLineD(d)).setLatLng(mid).addTo(savedLayer);
+    state.plotLineGroup&&state.plotLineGroup.addLayer(savedLayer);
+  }
+
+  $('msrSaveSheet').classList.remove('show');
+  clearMsrTemp();
+  msr.pts=[];
+  hideMeasureUi();
+  showToast(name+' berhasil disimpan ke layer peta');
+}
+
+// Measure save sheet UI interactions
+(()=>{
+  $('msrSaveClose').onclick=$('msrSaveCancelBtn').onclick=()=>$('msrSaveSheet').classList.remove('show');
+  $('msrSaveBtn').onclick=msrSave;
+  // color swatches
+  $('msrColors').querySelectorAll('.pc-btn').forEach(b=>b.onclick=()=>{
+    $('msrColors').querySelectorAll('.pc-btn').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');msr.color=b.dataset.color;rebuildMsrTemp();
+  });
+  $('msrColorCustom').onclick=()=>{const c=prompt('Hex warna (#rrggbb)','#56c9f2');if(c&&/^#[0-9a-fA-F]{6}$/.test(c)){msr.color=c;rebuildMsrTemp()}};
+  // line style
+  $('msrLineStyleRow').querySelectorAll('.ls-btn').forEach(b=>b.onclick=()=>{
+    $('msrLineStyleRow').querySelectorAll('.ls-btn').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');msr.lineStyle=b.dataset.ls;rebuildMsrTemp();
+  });
+  // line width
+  $('msrLineWidthRow').querySelectorAll('.lw-btn').forEach(b=>b.onclick=()=>{
+    $('msrLineWidthRow').querySelectorAll('.lw-btn').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');msr.lineWidth=parseInt(b.dataset.lw)||3;rebuildMsrTemp();
+  });
+  // measure mode tabs
+  document.querySelectorAll('[data-msr]').forEach(b=>b.onclick=()=>setMsrMode(b.dataset.msr));
+  // main actions
+  $('msrAmbilBtn').onclick=msrAmbil;
+  $('msrDoneBtn').onclick=msrDone;
+  $('msrUndoBtn').onclick=msrUndo;
+  $('msrCancelBtn').onclick=()=>{hideMeasureUi();showToast('Measure dibatalkan')};
+})();
+
+
+/* ============================================================
+   TRACKING ENGINE  –  GPS Route Recording
+   ============================================================ */
+const trk={
+  active:false,
+  paused:false,
+  pts:[],         // [{lat,lng,alt,time}]
+  polyline:null,
+  watchId:null,
+  startTime:null,
+  elapsed:0,      // ms accumulated (pause-aware)
+  pausedAt:null,
+  timerRef:null,
+  dist:0,         // metres
+  color:'#45d483',
+  lineStyle:'solid',
+  lineWidth:3,
+  exportFmt:'kml'
+};
+
+function hideTrkUi(){
+  ['trkReadyBar','trkHud','trkSaveSheet'].forEach(id=>{const el=$(id);if(el)el.classList.remove('show')});
+  if(trk.active)stopTracking(false);
+}
+
+function openTrackingReady(){
+  if(!state.map)return showToast('Buka peta dulu');
+  $('trkReadyBar').classList.add('show');
+}
+
+function startTracking(){
+  if(!navigator.geolocation)return showToast('GPS tidak didukung browser ini');
+  trk.active=true;trk.paused=false;trk.pts=[];trk.dist=0;
+  trk.startTime=Date.now();trk.elapsed=0;trk.pausedAt=null;
+  $('trkReadyBar').classList.remove('show');
+  $('trkHud').classList.add('show');
+  // build polyline on map
+  const dashArr=trk.lineStyle==='dashed'?'10,8':trk.lineStyle==='dotted'?'2,8':null;
+  trk.polyline=L.polyline([],{color:trk.color,weight:trk.lineWidth,dashArray:dashArr,opacity:.9}).addTo(state.map);
+  // start GPS watch
+  trk.watchId=navigator.geolocation.watchPosition(pos=>{
+    if(!trk.active||trk.paused)return;
+    const {latitude:lat,longitude:lng,altitude:alt,speed,accuracy}=pos.coords;
+    const pt={lat,lng,alt,time:Date.now()};
+    // accumulate distance
+    if(trk.pts.length){
+      const prev=trk.pts[trk.pts.length-1];
+      trk.dist+=haversine({lat:prev.lat,lon:prev.lng},{lat,lon:lng});
+    }
+    trk.pts.push(pt);
+    trk.polyline.addLatLng([lat,lng]);
+    if(state.gpsFollow&&state.map)state.map.panTo([lat,lng],{animate:true});
+    // update HUD stats
+    const sp=(speed||0)*3.6;
+    $('trkDist').textContent=trk.dist<1000?trk.dist.toFixed(0)+' m':(trk.dist/1000).toFixed(2)+' km';
+    $('trkSpeed').textContent=sp.toFixed(1)+' km/h';
+    $('trkElev').textContent=alt!=null?alt.toFixed(1)+' m':'— m';
+    $('trkLatLon').textContent='LAT '+lat.toFixed(5)+'° LONG '+lng.toFixed(5)+'°';
+    // GPS quality dot
+    const q=accuracy<=5?'fix':accuracy<=15?'avg':'poor';
+    $('trkGpsDot').className='trk-gps-dot '+(q==='fix'?'':'')+(q==='poor'?' poor':q==='avg'?' avg':'');
+    $('trkGpsText').textContent=q==='fix'?'GPS 3D Fix ±'+Math.round(accuracy)+' m':q==='avg'?'GPS Avg ±'+Math.round(accuracy)+' m':'GPS Poor ±'+Math.round(accuracy)+' m';
+  },e=>{
+    $('trkGpsDot').className='trk-gps-dot poor';
+    $('trkGpsText').textContent='GPS error – '+e.message;
+  },{enableHighAccuracy:true,timeout:30000,maximumAge:0});
+  // timer tick
+  trk.timerRef=setInterval(()=>{
+    if(trk.paused)return;
+    const elapsed=trk.elapsed+(Date.now()-trk.startTime);
+    const s=Math.floor(elapsed/1000);
+    const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=s%60;
+    $('trkTimer').textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0');
+  },500);
+  showToast('Tracking dimulai – GPS aktif');
+}
+
+function pauseTracking(){
+  if(!trk.active)return;
+  trk.paused=!trk.paused;
+  if(trk.paused){
+    trk.elapsed+=Date.now()-trk.startTime;
+    trk.pausedAt=Date.now();
+    $('trkPauseBtn').innerHTML='<svg viewBox="0 0 16 16" style="width:14px;height:14px;fill:currentColor"><polygon points="4,2 14,9 4,16"/></svg> Lanjut';
+    showToast('Tracking dijeda');
+  } else {
+    trk.startTime=Date.now();
+    trk.pausedAt=null;
+    $('trkPauseBtn').innerHTML='<svg viewBox="0 0 16 16" style="width:14px;height:14px;fill:currentColor"><rect x="3" y="2" width="4" height="12" rx="1"/><rect x="9" y="2" width="4" height="12" rx="1"/></svg> Pause';
+    showToast('Tracking dilanjutkan');
+  }
+}
+
+function stopTracking(showSave=true){
+  if(!trk.active)return;
+  trk.active=false;
+  if(trk.watchId!==null){navigator.geolocation.clearWatch(trk.watchId);trk.watchId=null}
+  clearInterval(trk.timerRef);trk.timerRef=null;
+  const totalElapsed=trk.elapsed+(trk.pausedAt?0:Date.now()-(trk.startTime||Date.now()));
+  trk._lastElapsed=totalElapsed;
+  $('trkHud').classList.remove('show');
+  if(showSave&&trk.pts.length>=2)openTrkSaveSheet();
+  else{if(trk.polyline&&state.map)state.map.removeLayer(trk.polyline);trk.polyline=null;showToast('Tracking dihentikan')}
+}
+
+function openTrkSaveSheet(){
+  const ms=trk._lastElapsed||0;
+  const s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=s%60;
+  const timeStr=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0');
+  $('trkSaveDist').textContent=trk.dist<1000?trk.dist.toFixed(0)+' m':(trk.dist/1000).toFixed(2)+' km';
+  $('trkSaveTime').textContent=timeStr;
+  $('trkNameInput').value='Track '+new Date().toLocaleDateString('id-ID');
+  $('trkDescInput').value='Jarak: '+(trk.dist<1000?trk.dist.toFixed(0)+' m':(trk.dist/1000).toFixed(2)+' km')+' | Durasi: '+timeStr;
+  if(trk.pts.length){
+    const p=trk.pts[0];
+    $('trkSaveCoord').textContent=llToUtm(p.lat,p.lng);
+  }
+  $('trkSaveSheet').classList.add('show');
+}
+
+function saveTrack(){
+  if(!state.map||!trk.polyline)return;
+  const name=$('trkNameInput').value.trim()||'Track';
+  const dashArr=trk.lineStyle==='dashed'?'10,8':trk.lineStyle==='dotted'?'2,8':null;
+  trk.polyline.setStyle({color:trk.color,weight:trk.lineWidth,dashArray:dashArr});
+  // add label at midpoint
+  if(trk.pts.length>=2){
+    const mid=trk.pts[Math.floor(trk.pts.length/2)];
+    const d=trk.dist<1000?trk.dist.toFixed(0)+' m':(trk.dist/1000).toFixed(2)+' km';
+    L.tooltip({permanent:true,className:'trk-route-lbl',direction:'top'})
+     .setContent('⬡ '+name+' · '+d).setLatLng([mid.lat,mid.lng]).addTo(state.map);
+  }
+  state.plotLineGroup&&state.plotLineGroup.addLayer(trk.polyline);
+  trk.polyline=null;
+  $('trkSaveSheet').classList.remove('show');
+  showToast(name+' disimpan ke layer peta');
+  // export simulation
+  const fmt=$('trkExportRow').querySelector('.sel')?.dataset.fmt||'kml';
+  setTimeout(()=>showToast('Export '+fmt.toUpperCase()+' siap (fitur memerlukan backend)'),1200);
+}
+
+// Tracking UI interactions
+(()=>{
+  $('trkMulaiBtn').onclick=startTracking;
+  $('trkTutupBtn').onclick=()=>{$('trkReadyBar').classList.remove('show')};
+  $('trkPauseBtn').onclick=pauseTracking;
+  $('trkStopBtn').onclick=()=>stopTracking(true);
+  $('trkSaveBtn').onclick=saveTrack;
+  $('trkSaveClose').onclick=$('trkSaveCancelBtn').onclick=()=>{
+    $('trkSaveSheet').classList.remove('show');
+    if(trk.polyline&&state.map){state.map.removeLayer(trk.polyline);trk.polyline=null}
+    showToast('Jejak tracking dibatalkan');
+  };
+  // colors
+  $('trkColors').querySelectorAll('.pc-btn').forEach(b=>b.onclick=()=>{
+    $('trkColors').querySelectorAll('.pc-btn').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');trk.color=b.dataset.color;
+  });
+  // line style
+  $('trkLineStyleRow').querySelectorAll('.ls-btn').forEach(b=>b.onclick=()=>{
+    $('trkLineStyleRow').querySelectorAll('.ls-btn').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');trk.lineStyle=b.dataset.ls;
+  });
+  // line width
+  $('trkLineWidthRow').querySelectorAll('.lw-btn').forEach(b=>b.onclick=()=>{
+    $('trkLineWidthRow').querySelectorAll('.lw-btn').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');trk.lineWidth=parseInt(b.dataset.lw)||3;
+  });
+  // export chips
+  $('trkExportRow').querySelectorAll('.trk-export-chip').forEach(b=>b.onclick=()=>{
+    $('trkExportRow').querySelectorAll('.trk-export-chip').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');trk.exportFmt=b.dataset.fmt;
+  });
+})();
+</script>
+<!-- V5 feature audit: active = import PDF render overlay, basemap sat/osm/topo, GPS, opacity, calibration bounds, layer visibility, local project list. partial/not active = GeoTIFF parsing, DXF/SHP/KML import parser, Plot/Measure/Tracking/Navigate/Export. WorldView requires API tile URL. -->
+</body>
+</html>
